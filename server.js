@@ -101,6 +101,30 @@ server.on('connection', async (ws) => {
                 color: player.color
             }, ws);
         }
+        else if (data.type === 'playerDamage') {
+            // Forward damage message to the target player
+            const targetWs = Array.from(server.clients).find((client, index) => {
+                const clientId = Array.from(players.keys())[index];
+                return clientId === data.targetId;
+            });
+
+            if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+                targetWs.send(JSON.stringify({
+                    type: 'playerDamage',
+                    targetId: data.targetId,
+                    damage: data.damage,
+                    attackerName: players.get(playerId).name
+                }));
+            }
+        }
+        else if (data.type === 'playerDied') {
+            // Broadcast death message to all players
+            broadcast({
+                type: 'notification',
+                message: `${players.get(playerId).name} was destroyed!`,
+                color: '#ff0000'
+            }, ws);
+        }
     });
 
     ws.on('close', async () => {

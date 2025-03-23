@@ -4,6 +4,36 @@ export class Game {
     constructor() {
         // Remove the promise-based approach and let showNameDialog handle initialization
         this.showNameDialog();
+        
+        // Add gun state tracking
+        this.lastGunCheck = 0;
+        this.gunCheckInterval = 1000; // Check every second
+        this.gunState = {
+            isWorking: true,
+            lastWorkingTime: Date.now(),
+            consecutiveFailures: 0
+        };
+        
+        // Add laser management
+        this.maxLasers = 50; // Limit the number of active lasers
+        this.forcedGunResetTimer = 0; // Timer to force reset gun system periodically
+        this.lastSuccessfulShot = Date.now(); // Track successful shots
+        this.shotCount = 0; // Count shots fired since last reset
+        this.maxShotsBeforeReset = 20; // Force a gun system reset after this many shots
+
+        // Add shop variables
+        this.maxShields = 100;
+        this.currentShields = 0;
+        this.shieldsBar = null;
+        this.shieldsText = null;
+        this.shopVisible = false;
+        this.selectedShopItemIndex = 0; // Track selected shop item
+        this.shopItems = []; // Store shop item references
+        
+        // Item prices
+        this.shieldPrice = 50;
+        this.healthPackPrice = 20;
+        this.healthPackAmount = 25; // Amount of health restored per health pack
     }
 
     showNameDialog() {
@@ -324,11 +354,14 @@ export class Game {
             if (this.keys.hasOwnProperty(key)) {
                 this.keys[key] = true;
             }
-            if (key === ' ') {
-                this.keys[' '] = true;
+            if (key === ' ') {  // Space bar
+                this.tryShoot();
             }
             if (key === 'shift') {
                 this.keys.shift = true;
+            }
+            if (key === 'b') {  // B key to toggle shop
+                this.toggleShop();
             }
         });
 
@@ -337,87 +370,321 @@ export class Game {
             if (this.keys.hasOwnProperty(key)) {
                 this.keys[key] = false;
             }
-            if (key === ' ') {
-                this.keys[' '] = false;
-            }
             if (key === 'shift') {
                 this.keys.shift = false;
-                this.isUsingNitros = false; // Reset nitros state when shift is released
+                this.isUsingNitros = false;
             }
         });
 
-        // Mouse look controls
-        document.addEventListener('click', () => {
-            this.requestPointerLockWithRetry();
-        });
-
-        document.addEventListener('pointerlockchange', () => {
-            this.isPointerLocked = document.pointerLockElement !== null;
-            this.pointerLockAttempts = 0; // Reset attempts when lock changes
-            
-            if (this.isPointerLocked) {
-                // Reset the check timer when we get the lock
-                this.lastPointerLockCheck = Date.now();
-                if (this.shootStatusText) {
-                    this.shootStatusText.textContent = 'SHOOTING: READY';
-                    this.shootStatusText.style.color = '#00ff00';
-                }
-            } else {
-                // Immediately try to regain pointer lock
-                this.requestPointerLockWithRetry();
-                if (this.shootStatusText) {
-                    this.shootStatusText.textContent = 'SHOOTING: CLICK TO LOCK MOUSE';
-                    this.shootStatusText.style.color = '#ff0000';
-                }
-            }
-        });
-
-        // Add pointer lock error handling
-        document.addEventListener('pointerlockerror', () => {
-            console.log('Pointer lock error occurred');
-            this.requestPointerLockWithRetry();
-        });
-
-        // Add visibility change handling
-        document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible') {
-                // When tab becomes visible again, try to regain pointer lock
-                this.requestPointerLockWithRetry();
-            }
-        });
-
-        document.addEventListener('mousemove', (event) => {
+        // Mouse movement controls
+        document.addEventListener('mousemove', (e) => {
             if (this.isPointerLocked) {
                 this.euler.setFromQuaternion(this.camera.quaternion);
-                this.euler.y -= event.movementX * this.mouseSensitivity;
-                this.euler.x -= event.movementY * this.mouseSensitivity;
+                this.euler.y -= e.movementX * this.mouseSensitivity;
+                this.euler.x -= e.movementY * this.mouseSensitivity;
                 this.euler.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.euler.x));
                 this.camera.quaternion.setFromEuler(this.euler);
             }
         });
 
+        // Pointer lock change handler
+        document.addEventListener('pointerlockchange', () => {
+            this.isPointerLocked = document.pointerLockElement === document.body;
+            if (!this.isPointerLocked) {
+                this.requestPointerLockWithRetry();
+            }
+        });
+
+        // Click to shoot (alternative to spacebar)
+        document.addEventListener('click', () => {
+            if (!this.isPointerLocked) {
+                this.requestPointerLockWithRetry();
+            }
+            this.tryShoot();
+        });
+
+        // Handle visibility change
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                this.requestPointerLockWithRetry();
+            }
+        });
+
+        // Handle focus change
+        window.addEventListener('focus', () => {
+            this.requestPointerLockWithRetry();
+        });
+
+        // Handle pointer lock errors
+        document.addEventListener('pointerlockerror', () => {
+            console.log('Pointer lock error - retrying...');
+            setTimeout(() => {
+                this.requestPointerLockWithRetry();
+            }, 1000);
+        });
+
+        // Initial pointer lock request
+        this.requestPointerLockWithRetry();
+
+        // Regular check for pointer lock
+        setInterval(() => {
+            const now = Date.now();
+            if (!this.isPointerLocked && now - this.lastPointerLockAttempt > 1000) {
+                this.requestPointerLockWithRetry();
+            }
+        }, 1000);
+
+        // Handle window resize
         window.addEventListener('resize', () => {
             this.camera.aspect = window.innerWidth / window.innerHeight;
             this.camera.updateProjectionMatrix();
             this.renderer.setSize(window.innerWidth, window.innerHeight);
         });
 
-        // Add focus handling
-        window.addEventListener('focus', () => {
-            this.requestPointerLockWithRetry();
+        // Add keyboard navigation for shop
+        window.addEventListener('keydown', (event) => {
+            if (this.shopVisible) {
+                switch (event.key) {
+                    case 'ArrowUp':
+                        this.selectShopItem(this.selectedShopItemIndex - 1);
+                        event.preventDefault();
+                        break;
+                    case 'ArrowDown':
+                        this.selectShopItem(this.selectedShopItemIndex + 1);
+                        event.preventDefault();
+                        break;
+                    case 'Enter':
+                        this.purchaseSelectedItem();
+                        event.preventDefault();
+                        break;
+                }
+            }
         });
     }
 
     requestPointerLockWithRetry() {
-        if (!this.isPointerLocked && this.pointerLockAttempts < this.maxPointerLockAttempts) {
+        const now = Date.now();
+        if (!this.isPointerLocked && now - this.lastPointerLockAttempt > 1000) {
+            this.lastPointerLockAttempt = now;
             document.body.requestPointerLock();
-            this.pointerLockAttempts++;
             
-            // Reset attempts after a delay
+            // Reset attempts counter after a delay
             setTimeout(() => {
                 this.pointerLockAttempts = 0;
-            }, 1000);
+            }, 5000);
         }
+    }
+
+    tryShoot() {
+        const now = Date.now();
+        
+        // Force gun reset if we've fired too many shots
+        if (this.shotCount >= this.maxShotsBeforeReset) {
+            console.log(`Forced gun reset after ${this.shotCount} shots`);
+            this.resetGunSystem();
+            return;
+        }
+        
+        // Normal gun checks
+        if (now - this.lastGunCheck > this.gunCheckInterval) {
+            this.checkGunState();
+            this.lastGunCheck = now;
+        }
+
+        // Only attempt to shoot if gun is working and not on cooldown
+        if (this.gunState.isWorking && now - this.lastShotTime > this.shootCooldown) {
+            console.log('Creating laser...');
+            
+            // Limit the number of active lasers to prevent performance issues
+            if (this.lasers.length >= this.maxLasers) {
+                console.log(`Too many lasers (${this.lasers.length}), removing oldest`);
+                const oldestLaser = this.lasers.shift();
+                this.scene.remove(oldestLaser);
+            }
+            
+            try {
+                this.createLaser();
+                this.lastShotTime = now;
+                this.lastSuccessfulShot = now;
+                this.shotCount++;
+                
+                // Update shooting status
+                if (this.shootStatusText) {
+                    this.shootStatusText.textContent = 'SHOOTING: COOLDOWN';
+                    this.shootStatusText.style.color = '#ff0000';
+                    setTimeout(() => {
+                        if (this.gunState.isWorking) {
+                            this.shootStatusText.textContent = 'SHOOTING: READY';
+                            this.shootStatusText.style.color = '#00ff00';
+                        }
+                    }, this.shootCooldown);
+                }
+                
+                // Force gun system reset every 5 seconds during intense battles
+                if (now - this.forcedGunResetTimer > 5000) {
+                    this.forcedGunResetTimer = now;
+                    this.resetGunSystem(false); // Silent reset
+                }
+            } catch (error) {
+                console.error('Error creating laser:', error);
+                this.gunState.isWorking = false;
+                this.attemptGunRecovery();
+            }
+        } else if (!this.gunState.isWorking) {
+            console.log('Gun not working:', {
+                consecutiveFailures: this.gunState.consecutiveFailures,
+                lastWorkingTime: this.gunState.lastWorkingTime,
+                timeSinceLastWorking: now - this.gunState.lastWorkingTime
+            });
+            
+            // Show warning if gun is not working
+            if (this.shootStatusText) {
+                this.shootStatusText.textContent = 'SHOOTING: SYSTEM ERROR';
+                this.shootStatusText.style.color = '#ff0000';
+            }
+            
+            // Force gun recovery
+            this.attemptGunRecovery();
+        }
+    }
+
+    resetGunSystem(showNotification = true) {
+        console.log('Resetting gun system');
+        
+        // Reset gun state
+        this.gunState.isWorking = true;
+        this.gunState.consecutiveFailures = 0;
+        this.gunState.lastWorkingTime = Date.now();
+        
+        // Reset shot counter
+        this.shotCount = 0;
+        
+        // Reset pointerlock if needed
+        if (!this.isPointerLocked) {
+            document.body.requestPointerLock();
+        }
+        
+        // Request animation frame to ensure smooth transitions
+        requestAnimationFrame(() => {
+            // Clear all lasers to free up resources
+            for (const laser of this.lasers) {
+                this.scene.remove(laser);
+            }
+            this.lasers = [];
+            
+            // Update UI
+            if (this.shootStatusText) {
+                this.shootStatusText.textContent = 'SHOOTING: READY';
+                this.shootStatusText.style.color = '#00ff00';
+            }
+            
+            if (showNotification) {
+                this.showNotification('Gun system reset', '#00ff00');
+            }
+        });
+    }
+
+    checkGunState() {
+        const now = Date.now();
+        
+        // Check for long time without successful shots
+        if (this.gunState.isWorking && now - this.lastSuccessfulShot > 5000) {
+            console.log('No successful shots for 5 seconds, forcing gun reset');
+            this.resetGunSystem();
+            return;
+        }
+        
+        // Check if pointer lock is active
+        if (!this.isPointerLocked) {
+            this.gunState.consecutiveFailures++;
+            
+            if (this.gunState.consecutiveFailures >= 3) {
+                this.gunState.isWorking = false;
+                this.gunState.lastWorkingTime = now;
+                console.log('Gun system error detected, attempting recovery');
+                this.showNotification('Gun system error: Attempting recovery...', '#ff0000');
+                this.attemptGunRecovery();
+            }
+        } else {
+            // Reset failure counter if pointer lock is active
+            if (this.gunState.consecutiveFailures > 0) {
+                console.log('Pointer lock regained, resetting failure counter');
+            }
+            this.gunState.consecutiveFailures = 0;
+            if (!this.gunState.isWorking) {
+                this.gunState.isWorking = true;
+                console.log('Gun system recovered');
+                if (this.shootStatusText) {
+                    this.shootStatusText.textContent = 'SHOOTING: READY';
+                    this.shootStatusText.style.color = '#00ff00';
+                }
+                this.showNotification('Gun system recovered', '#00ff00');
+            }
+        }
+    }
+
+    attemptGunRecovery() {
+        console.log('Starting gun recovery process');
+        
+        // Force pointer lock request
+        document.body.requestPointerLock();
+        
+        // Reset camera and ship
+        this.euler.set(0, 0, 0);
+        this.camera.quaternion.setFromEuler(this.euler);
+        
+        if (this.avatar) {
+            this.avatar.rotation.set(0, 0, 0);
+        }
+        
+        // Reset camera position
+        this.targetCameraPosition.set(0, 2, 5);
+        this.targetCameraLookAt.set(0, 0, 0);
+        
+        // Clear all lasers
+        for (const laser of this.lasers) {
+            this.scene.remove(laser);
+        }
+        this.lasers = [];
+        
+        // Reset shot counter
+        this.shotCount = 0;
+        
+        // Reset state
+        this.gunState.isWorking = true;
+        this.gunState.consecutiveFailures = 0;
+        
+        // Update UI
+        if (this.shootStatusText) {
+            this.shootStatusText.textContent = 'SHOOTING: READY';
+            this.shootStatusText.style.color = '#00ff00';
+        }
+    }
+
+    createLaser() {
+        const laserGeometry = new THREE.CylinderGeometry(0.02, 0.02, 1, 8);
+        const laserMaterial = new THREE.MeshStandardMaterial({
+            color: 0xff0000,
+            emissive: 0xff0000,
+            emissiveIntensity: 0.8
+        });
+        const laser = new THREE.Mesh(laserGeometry, laserMaterial);
+        
+        // Position laser at the gun
+        const gunPosition = new THREE.Vector3(0, 0.8, 0.3);
+        gunPosition.applyQuaternion(this.avatar.quaternion);
+        laser.position.copy(this.avatar.position).add(gunPosition);
+        
+        // Set laser rotation to match ship's rotation
+        laser.rotation.copy(this.avatar.rotation);
+        
+        // Set laser direction based on ship's forward direction
+        const direction = new THREE.Vector3(0, 0, -1);
+        direction.applyQuaternion(this.avatar.quaternion);
+        laser.direction = direction;
+        
+        this.scene.add(laser);
+        this.lasers.push(laser);
     }
 
     setupMultiplayer() {
@@ -516,6 +783,14 @@ export class Game {
                             this.leaderboardEntries.delete(data.id);
                         }
                         break;
+                    case 'playerDamage':
+                        if (data.targetId === this.playerId) {
+                            // We got hit!
+                            this.takeDamage(data.damage);
+                            // Show hit notification
+                            this.showNotification(`Hit by ${data.attackerName || 'another player'}!`, '#ff0000');
+                        }
+                        break;
                 }
             };
 
@@ -556,10 +831,16 @@ export class Game {
             otherAvatar.rotation.set(data.rotation.x, data.rotation.y, data.rotation.z);
         }
         
-        // Make other players slightly different color
+        // Use the player's chosen color for their ship
         otherAvatar.traverse((child) => {
             if (child instanceof THREE.Mesh) {
-                child.material.color.setHex(0x00ffff); // Cyan color for other players
+                const material = child.material;
+                if (material) {
+                    material.color.set(data.color || '#ffffff');
+                    if (material.emissive) {
+                        material.emissive.set(data.color || '#ffffff');
+                    }
+                }
             }
         });
         
@@ -690,32 +971,6 @@ export class Game {
         return ship;
     }
 
-    createLaser() {
-        const laserGeometry = new THREE.CylinderGeometry(0.02, 0.02, 1, 8);
-        const laserMaterial = new THREE.MeshStandardMaterial({
-            color: 0xff0000,
-            emissive: 0xff0000,
-            emissiveIntensity: 0.8
-        });
-        const laser = new THREE.Mesh(laserGeometry, laserMaterial);
-        
-        // Position laser at the gun
-        const gunPosition = new THREE.Vector3(0, 0.8, 0.3);
-        gunPosition.applyQuaternion(this.avatar.quaternion);
-        laser.position.copy(this.avatar.position).add(gunPosition);
-        
-        // Set laser rotation to match ship's rotation
-        laser.rotation.copy(this.avatar.rotation);
-        
-        // Set laser direction based on ship's forward direction
-        const direction = new THREE.Vector3(0, 0, -1); // Changed to negative Z to shoot outward
-        direction.applyQuaternion(this.avatar.quaternion);
-        laser.direction = direction;
-        
-        this.scene.add(laser);
-        this.lasers.push(laser);
-    }
-
     setupUI() {
         // Create coordinate display
         this.coordDisplay = document.createElement('div');
@@ -820,10 +1075,46 @@ export class Game {
         this.goldDisplay.textContent = 'Gold: 0';
         goldContainer.appendChild(this.goldDisplay);
 
+        // Create shields container (below health)
+        const shieldsContainer = document.createElement('div');
+        shieldsContainer.style.position = 'absolute';
+        shieldsContainer.style.top = '160px'; // Below health
+        shieldsContainer.style.left = '20px';
+        shieldsContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+        shieldsContainer.style.padding = '10px';
+        shieldsContainer.style.borderRadius = '5px';
+        shieldsContainer.style.color = '#ffffff';
+        shieldsContainer.style.fontFamily = 'monospace';
+        shieldsContainer.style.fontSize = '16px';
+        shieldsContainer.style.minWidth = '200px';
+        document.body.appendChild(shieldsContainer);
+
+        // Create shields text
+        this.shieldsText = document.createElement('div');
+        this.shieldsText.textContent = 'SHIELDS: 0/100';
+        shieldsContainer.appendChild(this.shieldsText);
+
+        // Create shields bar
+        const shieldsBarContainer = document.createElement('div');
+        shieldsBarContainer.style.width = '100%';
+        shieldsBarContainer.style.height = '20px';
+        shieldsBarContainer.style.backgroundColor = '#333';
+        shieldsBarContainer.style.borderRadius = '10px';
+        shieldsBarContainer.style.overflow = 'hidden';
+        shieldsBarContainer.style.marginTop = '5px';
+        shieldsContainer.appendChild(shieldsBarContainer);
+
+        this.shieldsBar = document.createElement('div');
+        this.shieldsBar.style.width = '0%'; // Start with 0 shields
+        this.shieldsBar.style.height = '100%';
+        this.shieldsBar.style.backgroundColor = '#4287f5'; // Blue for shields
+        this.shieldsBar.style.transition = 'width 0.3s ease-in-out';
+        shieldsBarContainer.appendChild(this.shieldsBar);
+
         // Create shooting status display
         const shootStatusContainer = document.createElement('div');
         shootStatusContainer.style.position = 'absolute';
-        shootStatusContainer.style.top = '160px'; // Adjusted spacing
+        shootStatusContainer.style.top = '230px'; // Adjusted position below shields
         shootStatusContainer.style.left = '20px';
         shootStatusContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
         shootStatusContainer.style.padding = '10px';
@@ -838,6 +1129,88 @@ export class Game {
         this.shootStatusText.textContent = 'SHOOTING: READY';
         shootStatusContainer.appendChild(this.shootStatusText);
 
+        // Add shop button in gold container
+        const shopButton = document.createElement('button');
+        shopButton.textContent = 'SHOP';
+        shopButton.style.marginTop = '10px';
+        shopButton.style.padding = '5px 10px';
+        shopButton.style.backgroundColor = '#ffd700';
+        shopButton.style.color = '#000000';
+        shopButton.style.border = 'none';
+        shopButton.style.borderRadius = '5px';
+        shopButton.style.cursor = 'pointer';
+        shopButton.style.fontFamily = 'monospace';
+        shopButton.style.fontSize = '14px';
+        shopButton.style.fontWeight = 'bold';
+        shopButton.onclick = () => this.toggleShop();
+        goldContainer.appendChild(shopButton);
+
+        // Create shop container
+        this.shopContainer = document.createElement('div');
+        this.shopContainer.style.position = 'absolute';
+        this.shopContainer.style.bottom = '100px'; // Position at bottom middle
+        this.shopContainer.style.left = '50%';
+        this.shopContainer.style.transform = 'translateX(-50%)';
+        this.shopContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+        this.shopContainer.style.padding = '15px';
+        this.shopContainer.style.borderRadius = '10px';
+        this.shopContainer.style.border = '2px solid #ffd700';
+        this.shopContainer.style.color = '#ffffff';
+        this.shopContainer.style.fontFamily = 'monospace';
+        this.shopContainer.style.fontSize = '16px';
+        this.shopContainer.style.minWidth = '300px';
+        this.shopContainer.style.display = 'none'; // Hidden by default
+        this.shopContainer.style.zIndex = '1000';
+        document.body.appendChild(this.shopContainer);
+
+        // Add shop title
+        const shopTitle = document.createElement('div');
+        shopTitle.textContent = 'SHIP UPGRADES';
+        shopTitle.style.textAlign = 'center';
+        shopTitle.style.color = '#ffd700';
+        shopTitle.style.fontSize = '20px';
+        shopTitle.style.marginBottom = '15px';
+        this.shopContainer.appendChild(shopTitle);
+
+        // Add shop items container
+        const itemsContainer = document.createElement('div');
+        itemsContainer.style.display = 'flex';
+        itemsContainer.style.flexDirection = 'column';
+        itemsContainer.style.gap = '10px';
+        this.shopContainer.appendChild(itemsContainer);
+
+        // Add shield item
+        this.addShopItem(
+            itemsContainer, 
+            'Shield Recharge', 
+            `Cost: ${this.shieldPrice} gold`, 
+            'Recharges shields to full capacity',
+            () => this.buyShields()
+        );
+
+        // Add health pack item
+        this.addShopItem(
+            itemsContainer, 
+            'Health Pack', 
+            `Cost: ${this.healthPackPrice} gold`, 
+            `Restores ${this.healthPackAmount} health points`,
+            () => this.buyHealthPack()
+        );
+
+        // Add close button
+        const closeButton = document.createElement('button');
+        closeButton.textContent = 'CLOSE';
+        closeButton.style.marginTop = '15px';
+        closeButton.style.padding = '8px';
+        closeButton.style.backgroundColor = '#333';
+        closeButton.style.color = '#fff';
+        closeButton.style.border = 'none';
+        closeButton.style.borderRadius = '5px';
+        closeButton.style.cursor = 'pointer';
+        closeButton.style.width = '100%';
+        closeButton.onclick = () => this.toggleShop();
+        this.shopContainer.appendChild(closeButton);
+
         // Create notification container
         this.notificationContainer = document.createElement('div');
         this.notificationContainer.style.position = 'absolute';
@@ -850,7 +1223,7 @@ export class Game {
         // Create leaderboard container
         this.leaderboardContainer = document.createElement('div');
         this.leaderboardContainer.style.position = 'absolute';
-        this.leaderboardContainer.style.top = '20px';
+        this.leaderboardContainer.style.bottom = '20px';  // Changed from top to bottom
         this.leaderboardContainer.style.right = '20px';
         this.leaderboardContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
         this.leaderboardContainer.style.padding = '10px';
@@ -859,6 +1232,7 @@ export class Game {
         this.leaderboardContainer.style.fontFamily = 'monospace';
         this.leaderboardContainer.style.fontSize = '16px';
         this.leaderboardContainer.style.minWidth = '200px';
+        this.leaderboardContainer.style.zIndex = '1000';  // Added to ensure it's above other elements
         document.body.appendChild(this.leaderboardContainer);
 
         // Create leaderboard title
@@ -876,6 +1250,146 @@ export class Game {
         this.leaderboardEntriesContainer.style.flexDirection = 'column';
         this.leaderboardEntriesContainer.style.gap = '5px';
         this.leaderboardContainer.appendChild(this.leaderboardEntriesContainer);
+    }
+
+    addShopItem(container, title, cost, description, buyFunction) {
+        const itemContainer = document.createElement('div');
+        itemContainer.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+        itemContainer.style.padding = '10px';
+        itemContainer.style.borderRadius = '5px';
+        itemContainer.style.display = 'flex';
+        itemContainer.style.justifyContent = 'space-between';
+        itemContainer.style.alignItems = 'center';
+        itemContainer.style.transition = 'background-color 0.2s ease-in-out';
+        
+        // Store the original background color
+        itemContainer.dataset.normalBg = 'rgba(255, 255, 255, 0.1)';
+        itemContainer.dataset.selectedBg = 'rgba(255, 215, 0, 0.3)';
+
+        const itemInfo = document.createElement('div');
+        itemInfo.style.flex = '1';
+
+        const itemTitle = document.createElement('div');
+        itemTitle.textContent = title;
+        itemTitle.style.fontWeight = 'bold';
+        itemTitle.style.color = '#fff';
+        itemInfo.appendChild(itemTitle);
+
+        const itemCost = document.createElement('div');
+        itemCost.textContent = cost;
+        itemCost.style.color = '#ffd700';
+        itemInfo.appendChild(itemCost);
+
+        const itemDesc = document.createElement('div');
+        itemDesc.textContent = description;
+        itemDesc.style.fontSize = '12px';
+        itemDesc.style.opacity = '0.7';
+        itemInfo.appendChild(itemDesc);
+
+        const buyButton = document.createElement('button');
+        buyButton.textContent = 'BUY';
+        buyButton.style.padding = '5px 15px';
+        buyButton.style.backgroundColor = '#ffd700';
+        buyButton.style.color = '#000';
+        buyButton.style.border = 'none';
+        buyButton.style.borderRadius = '5px';
+        buyButton.style.cursor = 'pointer';
+        buyButton.style.fontWeight = 'bold';
+        buyButton.style.marginLeft = '10px';
+        buyButton.onclick = buyFunction;
+
+        itemContainer.appendChild(itemInfo);
+        itemContainer.appendChild(buyButton);
+        container.appendChild(itemContainer);
+        
+        // Store reference to the item and its purchase function
+        this.shopItems.push({
+            element: itemContainer,
+            buyButton: buyButton,
+            buyFunction: buyFunction
+        });
+
+        return itemContainer;
+    }
+
+    toggleShop() {
+        this.shopVisible = !this.shopVisible;
+        this.shopContainer.style.display = this.shopVisible ? 'block' : 'none';
+        
+        // Reset selection when opening shop
+        if (this.shopVisible) {
+            this.selectShopItem(0);
+            this.showNotification('Shop opened (press B to close, use arrow keys to navigate)', '#ffd700');
+        }
+    }
+
+    buyShields() {
+        if (this.gold >= this.shieldPrice) {
+            // Deduct gold
+            this.gold -= this.shieldPrice;
+            this.goldDisplay.textContent = `Gold: ${this.gold}`;
+            
+            // Add full shields
+            this.currentShields = this.maxShields;
+            
+            // Update shields UI
+            const shieldsPercent = (this.currentShields / this.maxShields) * 100;
+            this.shieldsBar.style.width = `${shieldsPercent}%`;
+            this.shieldsText.textContent = `SHIELDS: ${this.currentShields}/${this.maxShields}`;
+            
+            // Show confirmation
+            this.showNotification('Shields recharged to full capacity!', '#4287f5');
+            
+            // Update leaderboard with new gold amount
+            if (this.leaderboardEntries.has(this.playerId)) {
+                this.leaderboardEntries.get(this.playerId).gold = this.gold;
+            }
+        } else {
+            // Show error
+            this.showNotification('Not enough gold for shields!', '#ff0000');
+        }
+    }
+
+    buyHealthPack() {
+        if (this.gold >= this.healthPackPrice) {
+            // Check if health is already full
+            if (this.currentHealth >= this.maxHealth) {
+                this.showNotification('Health already at maximum!', '#ff0000');
+                return;
+            }
+            
+            // Deduct gold
+            this.gold -= this.healthPackPrice;
+            this.goldDisplay.textContent = `Gold: ${this.gold}`;
+            
+            // Add health
+            this.currentHealth = Math.min(this.maxHealth, this.currentHealth + this.healthPackAmount);
+            
+            // Update health UI
+            const healthPercent = (this.currentHealth / this.maxHealth) * 100;
+            this.healthBar.style.width = `${healthPercent}%`;
+            this.healthText.textContent = `HP: ${this.currentHealth}/${this.maxHealth}`;
+            
+            // Update health bar color
+            if (healthPercent > 60) {
+                this.healthBar.style.backgroundColor = '#00ff00';
+            } else if (healthPercent > 30) {
+                this.healthBar.style.backgroundColor = '#ffff00';
+            } else {
+                this.healthBar.style.backgroundColor = '#ff0000';
+            }
+            
+            // Show confirmation
+            this.showNotification('Health pack applied!', '#00ff00');
+            
+            // Update leaderboard with new gold amount
+            if (this.leaderboardEntries.has(this.playerId)) {
+                this.leaderboardEntries.get(this.playerId).gold = this.gold;
+            }
+        } else {
+            // Show error
+            this.showNotification('Not enough gold for health pack!', '#ff0000');
+        }
     }
 
     showNotification(message, color = '#00ff00') {
@@ -910,7 +1424,29 @@ export class Game {
         const now = Date.now();
         if (now - this.lastDamageTime < this.invulnerabilityDuration) return;
 
-        this.currentHealth = Math.max(0, this.currentHealth - amount);
+        // Check if we have shields
+        if (this.currentShields > 0) {
+            // Calculate how much damage shields absorb
+            const shieldDamage = Math.min(this.currentShields, amount);
+            const healthDamage = amount - shieldDamage;
+            
+            // Apply damage to shields
+            this.currentShields -= shieldDamage;
+            
+            // Update shields bar
+            const shieldsPercent = (this.currentShields / this.maxShields) * 100;
+            this.shieldsBar.style.width = `${shieldsPercent}%`;
+            this.shieldsText.textContent = `SHIELDS: ${this.currentShields}/${this.maxShields}`;
+            
+            // Apply remaining damage to health
+            if (healthDamage > 0) {
+                this.currentHealth = Math.max(0, this.currentHealth - healthDamage);
+            }
+        } else {
+            // No shields, apply full damage to health
+            this.currentHealth = Math.max(0, this.currentHealth - amount);
+        }
+
         this.lastDamageTime = now;
         this.isInvulnerable = true;
 
@@ -957,19 +1493,40 @@ export class Game {
         // Check for death
         if (this.currentHealth <= 0) {
             this.handleDeath();
+            // Notify other players of death
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({
+                    type: 'playerDied',
+                    playerId: this.playerId
+                }));
+            }
         }
     }
 
     handleDeath() {
-        // Reset position and health with new camera position
-        this.camera.position.set(0, 2, 5);
-        this.camera.lookAt(0, 0, 0);
+        // Show death message
+        this.showNotification('You were destroyed! Respawning...', '#ff0000');
+        
+        // Reset position to a random spawn point
+        const spawnRadius = 30;
+        this.avatar.position.set(
+            (Math.random() - 0.5) * spawnRadius,
+            (Math.random() - 0.5) * spawnRadius,
+            (Math.random() - 0.5) * spawnRadius
+        );
+        
+        // Reset health
         this.currentHealth = this.maxHealth;
         this.healthBar.style.width = '100%';
         this.healthBar.style.backgroundColor = '#00ff00';
         this.healthText.textContent = `HP: ${this.currentHealth}/${this.maxHealth}`;
         
-        // Ensure pointer lock is maintained after death
+        // Reset shields
+        this.currentShields = 0;
+        this.shieldsBar.style.width = '0%';
+        this.shieldsText.textContent = `SHIELDS: ${this.currentShields}/${this.maxShields}`;
+        
+        // Ensure pointer lock is maintained
         if (!this.isPointerLocked) {
             document.body.requestPointerLock();
         }
@@ -1134,29 +1691,33 @@ export class Game {
         let isMovingDown = false;
         let isMovingUp = false;
 
-        // Handle nitros with improved timing
+        // Handle nitros with improved timing and reliability
         const now = Date.now();
         if (now - this.lastNitrosUpdate >= this.nitrosUpdateInterval) {
             if (this.keys.shift && this.currentNitros > 0) {
                 this.isUsingNitros = true;
                 this.currentNitros = Math.max(0, this.currentNitros - this.nitrosDrainRate);
-            } else {
+            } else if (!this.keys.shift) {
                 this.isUsingNitros = false;
-                this.currentNitros = Math.min(this.maxNitros, this.currentNitros + this.nitrosRechargeRate);
+                if (this.currentNitros < this.maxNitros) {
+                    this.currentNitros = Math.min(this.maxNitros, this.currentNitros + this.nitrosRechargeRate);
+                }
             }
 
-            // Update nitros bar with smooth transitions
-            const nitrosPercent = (this.currentNitros / this.maxNitros) * 100;
-            this.nitrosBar.style.width = `${nitrosPercent}%`;
-            this.nitrosText.textContent = `NITROS: ${Math.round(this.currentNitros)}/${this.maxNitros}`;
-            
-            // Change nitros bar color based on level
-            if (nitrosPercent < 20) {
-                this.nitrosBar.style.backgroundColor = '#ff0000';
-            } else if (nitrosPercent < 50) {
-                this.nitrosBar.style.backgroundColor = '#ffff00';
-            } else {
-                this.nitrosBar.style.backgroundColor = '#00ffff';
+            // Update nitros UI
+            if (this.nitrosBar && this.nitrosText) {
+                const nitrosPercent = (this.currentNitros / this.maxNitros) * 100;
+                this.nitrosBar.style.width = `${nitrosPercent}%`;
+                this.nitrosText.textContent = `NITROS: ${Math.round(this.currentNitros)}/${this.maxNitros}`;
+                
+                // Update nitros bar color
+                if (nitrosPercent < 20) {
+                    this.nitrosBar.style.backgroundColor = '#ff0000';
+                } else if (nitrosPercent < 50) {
+                    this.nitrosBar.style.backgroundColor = '#ffff00';
+                } else {
+                    this.nitrosBar.style.backgroundColor = '#00ffff';
+                }
             }
 
             this.lastNitrosUpdate = now;
@@ -1296,17 +1857,48 @@ export class Game {
                         positions[i] = (Math.random() - 0.5) * 0.2;
                         positions[i + 1] = (Math.random() - 0.5) * 0.2;
                         
-                        // Update colors
-                        colors[i + 1] = Math.random() * 0.5; // Vary green component
+                        // Update colors based on nitros state
+                        if (this.isUsingNitros) {
+                            // Blue flame colors for nitros
+                            colors[i] = 0.1; // Low red
+                            colors[i + 1] = 0.5 + Math.random() * 0.3; // Medium-high green (for cyan)
+                            colors[i + 2] = 0.8 + Math.random() * 0.2; // High blue
+                        } else {
+                            // Regular red-yellow flame colors
+                            colors[i] = 1; // Full red
+                            colors[i + 1] = Math.random() * 0.5; // Vary green component
+                            colors[i + 2] = 0; // No blue
+                        }
                         
-                        // Update sizes
-                        sizes[i / 3] = Math.random() * 0.5 + 0.1;
+                        // Update sizes - larger for nitros
+                        sizes[i / 3] = Math.random() * 0.5 + (this.isUsingNitros ? 0.3 : 0.1);
                     }
 
                     this.avatar.flames.geometry.attributes.position.needsUpdate = true;
                     this.avatar.flames.geometry.attributes.color.needsUpdate = true;
                     this.avatar.flames.geometry.attributes.size.needsUpdate = true;
                 }
+            }
+
+            // Also update engine exhaust color based on nitros
+            if (this.avatar) {
+                this.avatar.traverse((child) => {
+                    if (child instanceof THREE.Mesh && child.material && child.material.emissive) {
+                        // Check if this is the engine exhaust
+                        const isExhaust = child.position.z < -0.5 && child.material.emissive.r > 0.5;
+                        if (isExhaust) {
+                            if (this.isUsingNitros) {
+                                // Blue exhaust for nitros
+                                child.material.color.set(0x0088ff);
+                                child.material.emissive.set(0x0088ff);
+                            } else {
+                                // Regular orange exhaust
+                                child.material.color.set(0xff3300);
+                                child.material.emissive.set(0xff3300);
+                            }
+                        }
+                    }
+                });
             }
         }
 
@@ -1333,31 +1925,12 @@ export class Game {
             this.lastPointerLockCheck = now;
         }
 
-        // Handle shooting with improved reliability
-        if (this.keys[' ']) { // Space bar to shoot
-            const now = Date.now();
-            if (now - this.lastShotTime > this.shootCooldown) {
-                // Allow shooting even if pointer is temporarily unlocked
-                this.createLaser();
-                this.lastShotTime = now;
-                
-                // Update shooting status
-                if (this.shootStatusText) {
-                    this.shootStatusText.textContent = 'SHOOTING: READY';
-                    this.shootStatusText.style.color = '#00ff00';
-                }
-                
-                // Try to regain pointer lock if lost
-                if (!this.isPointerLocked) {
-                    this.requestPointerLockWithRetry();
-                }
-            }
+        // Update shooting status text color based on cooldown
+        const timeSinceLastShot = Date.now() - this.lastShotTime;
+        if (timeSinceLastShot < this.shootCooldown) {
+            this.shootStatusText.style.color = '#ff0000';
         } else {
-            // Reset shooting status
-            if (this.shootStatusText) {
-                this.shootStatusText.textContent = 'SHOOTING: READY';
-                this.shootStatusText.style.color = '#00ff00';
-            }
+            this.shootStatusText.style.color = '#00ff00';
         }
 
         // Update lasers
@@ -1366,6 +1939,29 @@ export class Game {
             
             // Move laser in its direction
             laser.position.addScaledVector(laser.direction, this.laserSpeed);
+
+            // Check for collisions with other players
+            this.otherPlayers.forEach((otherPlayer, playerId) => {
+                const distance = laser.position.distanceTo(otherPlayer.position);
+                if (distance < 2) { // Collision threshold
+                    // Remove the laser
+                    this.scene.remove(laser);
+                    this.lasers.splice(i, 1);
+
+                    // Send damage message to server
+                    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                        this.ws.send(JSON.stringify({
+                            type: 'playerDamage',
+                            targetId: playerId,
+                            damage: 20,
+                            attackerName: this.playerName
+                        }));
+                    }
+
+                    // Show hit marker notification
+                    this.showNotification('Hit!', '#ff0000');
+                }
+            });
 
             // Remove lasers that have gone too far
             if (laser.position.length() > 100) {
@@ -1379,11 +1975,71 @@ export class Game {
 
         // Update leaderboard more frequently
         this.updateLeaderboard();
+
+        // Add gun state check to the update loop
+        if (now - this.lastGunCheck > this.gunCheckInterval) {
+            this.checkGunState();
+            this.lastGunCheck = now;
+        }
+
+        // Clean up old lasers periodically to prevent memory issues
+        if (this.lasers.length > 0) {
+            const maxLaserAge = 5000; // 5 seconds
+            let removedCount = 0;
+            
+            // Remove lasers that have been around too long
+            for (let i = this.lasers.length - 1; i >= 0; i--) {
+                const laser = this.lasers[i];
+                
+                if (!laser.creationTime) {
+                    laser.creationTime = now;
+                }
+                
+                if (now - laser.creationTime > maxLaserAge) {
+                    this.scene.remove(laser);
+                    this.lasers.splice(i, 1);
+                    removedCount++;
+                }
+            }
+            
+            if (removedCount > 0) {
+                console.log(`Removed ${removedCount} old lasers, ${this.lasers.length} remaining`);
+            }
+        }
     }
 
     animate() {
         requestAnimationFrame(() => this.animate());
         this.update();
         this.renderer.render(this.scene, this.camera);
+    }
+
+    selectShopItem(index) {
+        // Ensure index is within bounds
+        index = Math.max(0, Math.min(index, this.shopItems.length - 1));
+        
+        // Reset previous selection
+        if (this.selectedShopItemIndex >= 0 && this.selectedShopItemIndex < this.shopItems.length) {
+            const prevItem = this.shopItems[this.selectedShopItemIndex].element;
+            prevItem.style.backgroundColor = prevItem.dataset.normalBg;
+            prevItem.style.border = 'none';
+        }
+        
+        // Set new selection
+        this.selectedShopItemIndex = index;
+        
+        // Highlight new selection
+        if (this.selectedShopItemIndex >= 0 && this.selectedShopItemIndex < this.shopItems.length) {
+            const currentItem = this.shopItems[this.selectedShopItemIndex].element;
+            currentItem.style.backgroundColor = currentItem.dataset.selectedBg;
+            currentItem.style.border = '2px solid #ffd700';
+        }
+    }
+    
+    purchaseSelectedItem() {
+        if (this.selectedShopItemIndex >= 0 && this.selectedShopItemIndex < this.shopItems.length) {
+            const selectedItem = this.shopItems[this.selectedShopItemIndex];
+            selectedItem.buyFunction();
+        }
     }
 } 
