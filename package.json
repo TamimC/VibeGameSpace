@@ -1,0 +1,16 @@
+{
+  "name": "vibe_code_game",
+  "version": "1.0.0",
+  "description": "A 3D game built with Three.js",
+  "main": "src/index.js",
+    "scripts": {
+    "dev": "vite --host"
+    },
+  "dependencies": {
+    "three": "^0.162.0",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "vite": "^5.1.4"
+  }
+} 
