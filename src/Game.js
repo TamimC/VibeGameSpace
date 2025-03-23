@@ -2,21 +2,165 @@ import * as THREE from 'three';
 
 export class Game {
     constructor() {
+        // Remove the promise-based approach and let showNameDialog handle initialization
+        this.showNameDialog();
+    }
+
+    showNameDialog() {
+        const dialog = document.createElement('div');
+        dialog.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            padding: 30px;
+            border-radius: 10px;
+            color: white;
+            text-align: center;
+            z-index: 1000;
+            border: 2px solid #00ff00;
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+            min-width: 300px;
+        `;
+
+        const title = document.createElement('h2');
+        title.textContent = 'Enter Your Name';
+        title.style.cssText = `
+            margin: 0 0 20px 0;
+            font-size: 24px;
+            color: #00ff00;
+            text-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+        `;
+        dialog.appendChild(title);
+
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.placeholder = 'Your name';
+        nameInput.style.cssText = `
+            padding: 10px;
+            margin-bottom: 20px;
+            width: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid #00ff00;
+            color: white;
+            border-radius: 5px;
+            font-size: 16px;
+            box-sizing: border-box;
+        `;
+        dialog.appendChild(nameInput);
+
+        const colorLabel = document.createElement('label');
+        colorLabel.textContent = 'Choose Ship Color:';
+        colorLabel.style.cssText = `
+            display: block;
+            margin-bottom: 10px;
+            color: #00ff00;
+        `;
+        dialog.appendChild(colorLabel);
+
+        // Create a container for color picker and button
+        const controlsContainer = document.createElement('div');
+        controlsContainer.style.cssText = `
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            align-items: center;
+        `;
+        dialog.appendChild(controlsContainer);
+
+        const colorInput = document.createElement('input');
+        colorInput.type = 'color';
+        colorInput.value = '#ffffff';
+        colorInput.style.cssText = `
+            width: 50px;
+            height: 50px;
+            padding: 0;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            background: none;
+        `;
+        controlsContainer.appendChild(colorInput);
+
+        const startButton = document.createElement('button');
+        startButton.textContent = 'Start Game';
+        startButton.style.cssText = `
+            padding: 15px 30px;
+            background: #00ff00;
+            border: none;
+            color: black;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            flex-grow: 1;
+        `;
+
+        startButton.onmouseover = () => {
+            startButton.style.backgroundColor = '#00cc00';
+            startButton.style.transform = 'scale(1.05)';
+        };
+
+        startButton.onmouseout = () => {
+            startButton.style.backgroundColor = '#00ff00';
+            startButton.style.transform = 'scale(1)';
+        };
+
+        controlsContainer.appendChild(startButton);
+
+        const startGame = () => {
+            const name = nameInput.value.trim();
+            if (name) {
+                this.playerName = name;
+                this.playerColor = colorInput.value;
+                document.body.removeChild(dialog);
+                // Initialize game after we have the color
+                this.initializeGame();
+            } else {
+                nameInput.style.border = '1px solid red';
+                nameInput.style.animation = 'shake 0.5s';
+            }
+        };
+
+        startButton.onclick = startGame;
+        nameInput.onkeypress = (e) => {
+            if (e.key === 'Enter') startGame();
+        };
+
+        // Add shake animation for invalid input
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes shake {
+                0%, 100% { transform: translateX(0); }
+                25% { transform: translateX(-10px); }
+                75% { transform: translateX(10px); }
+            }
+        `;
+        document.head.appendChild(style);
+
+        document.body.appendChild(dialog);
+        nameInput.focus();
+    }
+
+    initializeGame() {
+        // Initialize all the basic properties first
         this.scene = new THREE.Scene();
         this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
         this.renderer = new THREE.WebGLRenderer({ antialias: true });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         document.getElementById('game-container').appendChild(this.renderer.domElement);
 
-        // Movement variables
+        // Initialize all the game variables
         this.moveSpeed = 0.1;
         this.keys = {
             w: false,
             a: false,
             s: false,
             d: false,
-            x: false,  // Downward movement
-            q: false,  // Upward movement
+            x: false,
+            q: false,
             shift: false
         };
 
@@ -99,8 +243,9 @@ export class Game {
         this.pointerLockAttempts = 0;
         this.maxPointerLockAttempts = 3;
 
+        // Setup everything in the correct order
         this.setupScene();
-        this.setupAvatar();
+        this.setupAvatar();  // Now this will use the correct this.playerColor
         this.setupControls();
         this.setupMultiplayer();
         this.setupUI();
@@ -203,22 +348,26 @@ export class Game {
 
         // Mouse look controls
         document.addEventListener('click', () => {
-            if (!this.isPointerLocked) {
-                document.body.requestPointerLock();
-            }
+            this.requestPointerLockWithRetry();
         });
 
         document.addEventListener('pointerlockchange', () => {
             this.isPointerLocked = document.pointerLockElement !== null;
             this.pointerLockAttempts = 0; // Reset attempts when lock changes
-            // Update shooting status
-            if (this.shootStatusText) {
-                if (!this.isPointerLocked) {
-                    this.shootStatusText.textContent = 'SHOOTING: CLICK TO LOCK MOUSE';
-                    this.shootStatusText.style.color = '#ff0000';
-                } else {
+            
+            if (this.isPointerLocked) {
+                // Reset the check timer when we get the lock
+                this.lastPointerLockCheck = Date.now();
+                if (this.shootStatusText) {
                     this.shootStatusText.textContent = 'SHOOTING: READY';
                     this.shootStatusText.style.color = '#00ff00';
+                }
+            } else {
+                // Immediately try to regain pointer lock
+                this.requestPointerLockWithRetry();
+                if (this.shootStatusText) {
+                    this.shootStatusText.textContent = 'SHOOTING: CLICK TO LOCK MOUSE';
+                    this.shootStatusText.style.color = '#ff0000';
                 }
             }
         });
@@ -226,8 +375,15 @@ export class Game {
         // Add pointer lock error handling
         document.addEventListener('pointerlockerror', () => {
             console.log('Pointer lock error occurred');
-            // Try to regain pointer lock
-            document.body.requestPointerLock();
+            this.requestPointerLockWithRetry();
+        });
+
+        // Add visibility change handling
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                // When tab becomes visible again, try to regain pointer lock
+                this.requestPointerLockWithRetry();
+            }
         });
 
         document.addEventListener('mousemove', (event) => {
@@ -245,16 +401,31 @@ export class Game {
             this.camera.updateProjectionMatrix();
             this.renderer.setSize(window.innerWidth, window.innerHeight);
         });
+
+        // Add focus handling
+        window.addEventListener('focus', () => {
+            this.requestPointerLockWithRetry();
+        });
+    }
+
+    requestPointerLockWithRetry() {
+        if (!this.isPointerLocked && this.pointerLockAttempts < this.maxPointerLockAttempts) {
+            document.body.requestPointerLock();
+            this.pointerLockAttempts++;
+            
+            // Reset attempts after a delay
+            setTimeout(() => {
+                this.pointerLockAttempts = 0;
+            }, 1000);
+        }
     }
 
     setupMultiplayer() {
         console.log('Connecting to WebSocket server...');
         
-        // Try to connect to the WebSocket server
         try {
             this.ws = new WebSocket('ws://10.0.0.126:8080');
             
-            // Set a connection timeout
             const connectionTimeout = setTimeout(() => {
                 if (this.ws.readyState !== WebSocket.OPEN) {
                     console.log('Connection timeout - server not responding');
@@ -267,8 +438,12 @@ export class Game {
                 clearTimeout(connectionTimeout);
                 console.log('Connected to WebSocket server');
                 this.showNotification('Connected to server', '#00ff00');
-                // Request initial player list when connected
-                this.ws.send(JSON.stringify({ type: 'requestPlayers' }));
+                // Send player name along with request
+                this.ws.send(JSON.stringify({ 
+                    type: 'requestPlayers',
+                    name: this.playerName,
+                    color: this.playerColor
+                }));
             };
 
             this.ws.onmessage = (event) => {
@@ -282,7 +457,7 @@ export class Game {
                         // Add current player to leaderboard immediately
                         this.leaderboardEntries.set(this.playerId, {
                             gold: this.gold,
-                            name: 'You'
+                            name: this.playerName
                         });
                         break;
                     case 'players':
@@ -298,11 +473,11 @@ export class Game {
                             if (player.id !== this.playerId) {
                                 console.log('Adding other player:', player.id);
                                 this.addOtherPlayer(player);
-                                this.showNotification(`Player ${player.id} joined the game`);
+                                this.showNotification(`${player.name} joined the game`);
                                 // Add player to leaderboard with their gold amount
                                 this.leaderboardEntries.set(player.id, {
                                     gold: player.gold || 0,
-                                    name: `Player ${player.id}`
+                                    name: player.name
                                 });
                             }
                         });
@@ -311,11 +486,11 @@ export class Game {
                         console.log('New player joined:', data.id);
                         if (data.id !== this.playerId) {
                             this.addOtherPlayer(data);
-                            this.showNotification(`Player ${data.id} joined the game`);
+                            this.showNotification(`${data.name} joined the game`);
                             // Add new player to leaderboard with their gold amount
                             this.leaderboardEntries.set(data.id, {
                                 gold: data.gold || 0,
-                                name: `Player ${data.id}`
+                                name: data.name
                             });
                         }
                         break;
@@ -325,15 +500,18 @@ export class Game {
                             this.updateOtherPlayer(data);
                             // Update leaderboard entry for this player
                             if (this.leaderboardEntries.has(data.id)) {
-                                this.leaderboardEntries.get(data.id).gold = data.gold || 0;
+                                const entry = this.leaderboardEntries.get(data.id);
+                                entry.gold = data.gold || 0;
+                                entry.name = data.name;
                             }
                         }
                         break;
                     case 'playerLeft':
                         console.log('Player left:', data.id);
                         if (data.id !== this.playerId) {
+                            const playerName = this.leaderboardEntries.get(data.id)?.name || 'Unknown player';
                             this.removeOtherPlayer(data.id);
-                            this.showNotification(`Player ${data.id} left the game`, '#ff0000');
+                            this.showNotification(`${playerName} left the game`, '#ff0000');
                             // Remove player from leaderboard
                             this.leaderboardEntries.delete(data.id);
                         }
@@ -413,16 +591,18 @@ export class Game {
     createSpaceship() {
         const ship = new THREE.Group();
 
-        // Main body (fuselage)
-        const bodyGeometry = new THREE.ConeGeometry(0.3, 1.2, 8);
-        const bodyMaterial = new THREE.MeshStandardMaterial({ 
-            color: 0xffff00,
+        // Create materials with the player's color
+        const mainMaterial = new THREE.MeshStandardMaterial({ 
+            color: this.playerColor,
             metalness: 0.3,
             roughness: 0.4,
-            emissive: 0xffff00,
+            emissive: this.playerColor,
             emissiveIntensity: 0.2
         });
-        const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+
+        // Main body (fuselage)
+        const bodyGeometry = new THREE.ConeGeometry(0.3, 1.2, 8);
+        const body = new THREE.Mesh(bodyGeometry, mainMaterial);
         body.rotation.x = -Math.PI / 2;
         body.position.y = 0.6;
         ship.add(body);
@@ -430,10 +610,10 @@ export class Game {
         // Cockpit
         const cockpitGeometry = new THREE.SphereGeometry(0.2, 8, 8);
         const cockpitMaterial = new THREE.MeshStandardMaterial({ 
-            color: 0xffff00,
+            color: this.playerColor,
             metalness: 0.3,
             roughness: 0.4,
-            emissive: 0xffff00,
+            emissive: this.playerColor,
             emissiveIntensity: 0.2,
             transparent: true,
             opacity: 0.8
@@ -444,16 +624,16 @@ export class Game {
 
         // Wings
         const wingGeometry = new THREE.BoxGeometry(2, 0.1, 0.5);
-        const wingMaterial = new THREE.MeshStandardMaterial({ 
-            color: 0xffff00,
-            metalness: 0.3,
-            roughness: 0.4,
-            emissive: 0xffff00,
-            emissiveIntensity: 0.2
-        });
-        const wings = new THREE.Mesh(wingGeometry, wingMaterial);
+        const wings = new THREE.Mesh(wingGeometry, mainMaterial);
         wings.position.set(0, 0.8, 0);
         ship.add(wings);
+
+        // Gun
+        const gunGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.4, 8);
+        const gun = new THREE.Mesh(gunGeometry, mainMaterial);
+        gun.rotation.x = Math.PI / 2;
+        gun.position.set(0, 0.8, 0.3);
+        ship.add(gun);
 
         // Engine exhaust
         const exhaustGeometry = new THREE.CylinderGeometry(0.1, 0.1, 0.3, 8);
@@ -506,20 +686,6 @@ export class Game {
         ship.flamePositions = flamePositions;
         ship.flameColors = flameColors;
         ship.flameSizes = flameSizes;
-
-        // Add gun to the ship
-        const gunGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.4, 8);
-        const gunMaterial = new THREE.MeshStandardMaterial({ 
-            color: 0xffff00,
-            metalness: 0.3,
-            roughness: 0.4,
-            emissive: 0xffff00,
-            emissiveIntensity: 0.2
-        });
-        const gun = new THREE.Mesh(gunGeometry, gunMaterial);
-        gun.rotation.x = Math.PI / 2;
-        gun.position.set(0, 0.8, 0.3); // Position on top of ship
-        ship.add(gun);
 
         return ship;
     }
@@ -575,6 +741,7 @@ export class Game {
         healthContainer.style.color = '#ffffff';
         healthContainer.style.fontFamily = 'monospace';
         healthContainer.style.fontSize = '16px';
+        healthContainer.style.minWidth = '200px';
         document.body.appendChild(healthContainer);
 
         // Create health text
@@ -584,11 +751,12 @@ export class Game {
 
         // Create health bar
         const healthBarContainer = document.createElement('div');
-        healthBarContainer.style.width = '200px';
+        healthBarContainer.style.width = '100%';
         healthBarContainer.style.height = '20px';
         healthBarContainer.style.backgroundColor = '#333';
         healthBarContainer.style.borderRadius = '10px';
         healthBarContainer.style.overflow = 'hidden';
+        healthBarContainer.style.marginTop = '5px';
         healthContainer.appendChild(healthBarContainer);
 
         this.healthBar = document.createElement('div');
@@ -601,7 +769,7 @@ export class Game {
         // Create nitros container
         const nitrosContainer = document.createElement('div');
         nitrosContainer.style.position = 'absolute';
-        nitrosContainer.style.top = '80px'; // Position below health bar
+        nitrosContainer.style.top = '90px'; // Adjusted spacing
         nitrosContainer.style.left = '20px';
         nitrosContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
         nitrosContainer.style.padding = '10px';
@@ -609,6 +777,7 @@ export class Game {
         nitrosContainer.style.color = '#ffffff';
         nitrosContainer.style.fontFamily = 'monospace';
         nitrosContainer.style.fontSize = '16px';
+        nitrosContainer.style.minWidth = '200px';
         document.body.appendChild(nitrosContainer);
 
         // Create nitros text
@@ -618,11 +787,12 @@ export class Game {
 
         // Create nitros bar
         const nitrosBarContainer = document.createElement('div');
-        nitrosBarContainer.style.width = '200px';
+        nitrosBarContainer.style.width = '100%';
         nitrosBarContainer.style.height = '20px';
         nitrosBarContainer.style.backgroundColor = '#333';
         nitrosBarContainer.style.borderRadius = '10px';
         nitrosBarContainer.style.overflow = 'hidden';
+        nitrosBarContainer.style.marginTop = '5px';
         nitrosContainer.appendChild(nitrosBarContainer);
 
         this.nitrosBar = document.createElement('div');
@@ -643,6 +813,7 @@ export class Game {
         goldContainer.style.color = '#ffd700';
         goldContainer.style.fontFamily = 'monospace';
         goldContainer.style.fontSize = '16px';
+        goldContainer.style.minWidth = '200px';
         document.body.appendChild(goldContainer);
 
         this.goldDisplay = document.createElement('div');
@@ -652,7 +823,7 @@ export class Game {
         // Create shooting status display
         const shootStatusContainer = document.createElement('div');
         shootStatusContainer.style.position = 'absolute';
-        shootStatusContainer.style.top = '140px'; // Position below nitros bar
+        shootStatusContainer.style.top = '160px'; // Adjusted spacing
         shootStatusContainer.style.left = '20px';
         shootStatusContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
         shootStatusContainer.style.padding = '10px';
@@ -660,6 +831,7 @@ export class Game {
         shootStatusContainer.style.color = '#ffffff';
         shootStatusContainer.style.fontFamily = 'monospace';
         shootStatusContainer.style.fontSize = '16px';
+        shootStatusContainer.style.minWidth = '200px';
         document.body.appendChild(shootStatusContainer);
 
         this.shootStatusText = document.createElement('div');
@@ -678,7 +850,7 @@ export class Game {
         // Create leaderboard container
         this.leaderboardContainer = document.createElement('div');
         this.leaderboardContainer.style.position = 'absolute';
-        this.leaderboardContainer.style.top = '200px'; // Moved down from 20px to 200px
+        this.leaderboardContainer.style.top = '20px';
         this.leaderboardContainer.style.right = '20px';
         this.leaderboardContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
         this.leaderboardContainer.style.padding = '10px';
@@ -1153,11 +1325,10 @@ export class Game {
             });
         }
 
-        // Check and maintain pointer lock
-        if (now - this.lastPointerLockCheck > this.pointerLockCheckInterval) {
-            if (!this.isPointerLocked && this.pointerLockAttempts < this.maxPointerLockAttempts) {
-                document.body.requestPointerLock();
-                this.pointerLockAttempts++;
+        // Check and maintain pointer lock more aggressively
+        if (now - this.lastPointerLockCheck > 500) { // Check more frequently (every 500ms)
+            if (!this.isPointerLocked) {
+                this.requestPointerLockWithRetry();
             }
             this.lastPointerLockCheck = now;
         }
@@ -1166,30 +1337,24 @@ export class Game {
         if (this.keys[' ']) { // Space bar to shoot
             const now = Date.now();
             if (now - this.lastShotTime > this.shootCooldown) {
-                if (this.isPointerLocked) {
-                    this.createLaser();
-                    this.lastShotTime = now;
-                    // Update shooting status
-                    if (this.shootStatusText) {
-                        this.shootStatusText.textContent = 'SHOOTING: READY';
-                        this.shootStatusText.style.color = '#00ff00';
-                    }
-                } else {
-                    // Update status when trying to shoot without pointer lock
-                    if (this.shootStatusText) {
-                        this.shootStatusText.textContent = 'SHOOTING: CLICK TO LOCK MOUSE';
-                        this.shootStatusText.style.color = '#ff0000';
-                    }
-                    // Try to regain pointer lock when attempting to shoot
-                    if (this.pointerLockAttempts < this.maxPointerLockAttempts) {
-                        document.body.requestPointerLock();
-                        this.pointerLockAttempts++;
-                    }
+                // Allow shooting even if pointer is temporarily unlocked
+                this.createLaser();
+                this.lastShotTime = now;
+                
+                // Update shooting status
+                if (this.shootStatusText) {
+                    this.shootStatusText.textContent = 'SHOOTING: READY';
+                    this.shootStatusText.style.color = '#00ff00';
+                }
+                
+                // Try to regain pointer lock if lost
+                if (!this.isPointerLocked) {
+                    this.requestPointerLockWithRetry();
                 }
             }
         } else {
-            // Reset shooting status when not shooting
-            if (this.shootStatusText && this.isPointerLocked) {
+            // Reset shooting status
+            if (this.shootStatusText) {
                 this.shootStatusText.textContent = 'SHOOTING: READY';
                 this.shootStatusText.style.color = '#00ff00';
             }
